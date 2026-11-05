@@ -29,6 +29,16 @@ protected:
     // Körs en gång när spelet startar eller objektet spawnas
     virtual void BeginPlay() override;
 
+    UFUNCTION()
+    void OnRep_CurrentPosition();
+
+    // En hjälpfunktion för att hålla koden modulär och ren
+    void UpdateCollisionBasedOnState();
+
+private:
+
+    bool bCollisionIsDisabled = false;
+
 public:
     // Körs varje frame
     virtual void Tick(float DeltaTime) override;
@@ -41,6 +51,6 @@ public:
     UStaticMeshComponent* ArtefactMesh;
 
     // Variabeln som håller koll på var stenen är just nu (Replicated = nätverkssäkrad)
-    UPROPERTY(Replicated, BlueprintReadOnly, Category = "Artefact|State")
+    UPROPERTY(ReplicatedUsing = OnRep_CurrentPosition, BlueprintReadOnly, Category = "Artefact|State")
     EArtifactPosition CurrentPosition;
 };

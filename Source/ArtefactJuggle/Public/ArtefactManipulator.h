@@ -22,16 +22,21 @@ protected:
 public:
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	void SetIsControllingArtefact(bool bNewState);
 
 	void HandleDirectionInput(FVector2D InputVector, FVector CameraForwardVector);
 
+	UFUNCTION(BlueprintCallable)
 	void ResetCurrentPosition();
 
 	UFUNCTION(Server, Reliable)
 	void Server_ChangePosition(EArtifactPosition NewPosition);
 
-	UPROPERTY(BlueprintReadWrite, Category = "Artefact")
+	UFUNCTION(Server, Reliable)
+	void Server_DropArtefact(class AArtefactBase* ArtefactToDrop, FVector FinalLocation, FRotator FinalRotation);
+
+	UPROPERTY(Replicated, BlueprintReadWrite, Category = "Artefact")
 	class AArtefactBase* EquippedArtefact;
 
 	UPROPERTY(BlueprintReadWrite, Category = "Artefact")
@@ -39,7 +44,7 @@ public:
 	bool bHasNeutralizedInput;
 
 protected:
-	UPROPERTY(BlueprintReadOnly, Category = "Artefact")
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Artefact")
 	EArtifactPosition CurrentPosition;
 
 	UPROPERTY(EditAnywhere, Category = "Artefact Settings")

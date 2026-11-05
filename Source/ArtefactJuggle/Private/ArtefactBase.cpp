@@ -39,3 +39,45 @@ void AArtefactBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLif
     // Detta makro säger: "Skicka CurrentPosition från Servern till alla Klienter så fort den ändras"
     DOREPLIFETIME(AArtefactBase, CurrentPosition);
 }
+void AArtefactBase::OnRep_CurrentPosition()
+{
+	// Körs AUTOMATISKT på alla klienter när servern ändrar CurrentPosition!
+	UpdateCollisionBasedOnState();
+}
+
+void AArtefactBase::UpdateCollisionBasedOnState()
+{
+	if (!ArtefactMesh) return;
+
+	if (CurrentPosition == EArtifactPosition::None)
+	{
+		if (bCollisionIsDisabled)
+		{
+			/*ArtefactMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+			ArtefactMesh->SetCollisionResponseToAllChannels(ECR_Block);*/
+
+			ArtefactMesh->SetCollisionResponseToChannel(ECC_Pawn, ECR_Block);
+			ArtefactMesh->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
+			ArtefactMesh->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
+
+			bCollisionIsDisabled = false;
+
+			GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Green, TEXT("C++ Fysik: Kollision påslagen"));
+		}
+	}
+	else
+	{
+		if (!bCollisionIsDisabled)
+		{
+			// ArtefactMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+			ArtefactMesh->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+			ArtefactMesh->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Ignore);
+			ArtefactMesh->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Ignore);
+
+			bCollisionIsDisabled = true;
+
+			GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Yellow, TEXT("C++ Fysik: Kollision avslagen"));
+		}
+	}
+}

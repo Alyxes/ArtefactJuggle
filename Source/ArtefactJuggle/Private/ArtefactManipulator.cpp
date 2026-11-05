@@ -1,11 +1,15 @@
 #include "ArtefactManipulator.h"
 #include "ArtefactBase.h"
+#include "ArtefactJuggleCharacter.h"
 #include "GameFramework/Character.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "Net/UnrealNetwork.h"
 
 UArtefactManipulator::UArtefactManipulator()
 {
 	PrimaryComponentTick.bCanEverTick = true;
+
+	SetIsReplicatedByDefault(true);
 
 	CurrentPosition = EArtifactPosition::Forward;
 	InterpSpeed = 10.0f;
@@ -41,6 +45,14 @@ void UArtefactManipulator::TickComponent(float DeltaTime, ELevelTick TickType, F
 		// 4. Applicera direkt i världen (Detta struntar helt i om karaktärens mesh är omskalad!)
 		ArtefactRoot->SetWorldLocationAndRotation(NewWorldLoc, NewWorldRot);
 	}
+}
+
+void UArtefactManipulator::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(UArtefactManipulator, EquippedArtefact);
+	DOREPLIFETIME(UArtefactManipulator, CurrentPosition);
 }
 
 void UArtefactManipulator::SetIsControllingArtefact(bool bNewState)
@@ -224,6 +236,11 @@ void UArtefactManipulator::HandleDirectionInput(FVector2D InputVector, FVector C
 	// NETWORK OPTIMIZATION: Only send RPC to server if the position actually changed
 	if (NewTargetPosition != CurrentPosition)
 	{
+		CurrentPosition = NewTargetPosition;
+
+		if (EquippedArtefact)
+			EquippedArtefact->CurrentPosition = NewTargetPosition;
+
 		Server_ChangePosition(NewTargetPosition);
 	}
 }
@@ -236,6 +253,49 @@ void UArtefactManipulator::Server_ChangePosition_Implementation(EArtifactPositio
 	{
 		EquippedArtefact->CurrentPosition = NewPosition;
 	}
+}
+
+void UArtefactManipulator::Server_DropArtefact_Implementation(AArtefactBase* ArtefactToDrop, FVector FinalLocation, FRotator FinalRotation)
+{
+	if (ArtefactToDrop == nullptr) return;
+
+	// 1. Fetch the character (owner of the component).
+	AArtefactJuggleCharacter* CharOwner = Cast<AArtefactJuggleCharacter>(GetOwner());
+	if (!CharOwner) return;
+
+	// 2. Enable movement replication again.
+	ArtefactToDrop->SetReplicateMovement(true);
+	ArtefactToDrop->SetActorRotation(FinalRotation);
+
+	// 3. Shut off controlling mode and reset the character's juggling state.
+	
+
+	// 4. Detach.
+	FDetachmentTransformRules DetachRules(EDetachmentRule::KeepWorld, true);
+	ArtefactToDrop->DetachFromActor(DetachRules);
+	ArtefactToDrop->SetActorLocation(FinalLocation);
+
+	// 5. Reset network owner (important!).
+	ArtefactToDrop->SetOwner(nullptr);
+	ArtefactToDrop->CurrentPosition = EArtifactPosition::None;
+
+	// 6. Restore collisions.
+	UPrimitiveComponent* ArtefactRoot = Cast<UPrimitiveComponent>(ArtefactToDrop->GetRootComponent());
+	if (ArtefactRoot)
+	{
+		ArtefactRoot->SetCollisionResponseToChannel(ECC_Pawn, ECR_Block);
+		ArtefactRoot->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
+		ArtefactRoot->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
+	}
+
+	// 7. Reset variables on the component and character.
+	EquippedArtefact = nullptr;
+	bIsControllingArtefact = false;
+	ResetCurrentPosition();
+
+	CharOwner->StopArtefactJuggle();
+	CharOwner->CurrentArtefact = nullptr;
+	CharOwner->bIsHoldingArtefact = false;
 }
 
 FTransform UArtefactManipulator::GetTargetSlotTransform(EArtifactPosition Position) const
@@ -283,6 +343,9 @@ FTransform UArtefactManipulator::GetTargetSlotTransform(EArtifactPosition Positi
 void UArtefactManipulator::ResetCurrentPosition()
 {
 	CurrentPosition = EArtifactPosition::Forward;
+
+	bHasNeutralizedInput = true;
+
 	if (EquippedArtefact)
 	{
 		EquippedArtefact->CurrentPosition = EArtifactPosition::Forward;

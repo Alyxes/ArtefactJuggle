@@ -13,6 +13,7 @@
 #include "ArtefactJuggle.h"
 #include "ArtefactManipulator.h"
 #include "ArtefactBase.h"
+#include "Net/UnrealNetwork.h"
 
 AArtefactJuggleCharacter::AArtefactJuggleCharacter()
 {
@@ -51,6 +52,19 @@ AArtefactJuggleCharacter::AArtefactJuggleCharacter()
 	// Note: The skeletal mesh and anim blueprint references on the Mesh component (inherited from Character) 
 	// are set in the derived blueprint asset named ThirdPersonCharacter (to avoid direct content references in C++)
 	bIsModifierPressed = false;
+
+	bReplicates = true;
+	SetReplicateMovement(true);
+}
+
+void AArtefactJuggleCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	// This macro tells Unreal Engine to replicate these properties from server -> clients whenever they change.
+	DOREPLIFETIME(AArtefactJuggleCharacter, CurrentArtefact);
+	DOREPLIFETIME(AArtefactJuggleCharacter, bIsHoldingArtefact);
+	DOREPLIFETIME(AArtefactJuggleCharacter, bIsModifierPressed);
 }
 
 void AArtefactJuggleCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -88,6 +102,12 @@ void AArtefactJuggleCharacter::Move(const FInputActionValue& Value)
 		{
 			// Get the camera's forward vector to determine screen space direction
 			FVector CameraForward = FollowCamera->GetForwardVector();
+
+			// Trying to make it so that the player doesn't have to press twice when using WASD.
+			/*bool bIsAnalogStick = (MovementVector.SizeSquared() > 0.0f && MovementVector.SizeSquared() < 0.99f);
+
+			if (!bIsAnalogStick && MovementVector.SizeSquared() == 0.0f)
+				Manipulator->bHasNeutralizedInput = true;*/
 			
 			// Pass both the input vector AND the camera direction to the manipulator
 			Manipulator->HandleDirectionInput(MovementVector, CameraForward);
@@ -159,21 +179,23 @@ void AArtefactJuggleCharacter::DoJumpEnd()
 	StopJumping();
 }
 
-void AArtefactJuggleCharacter::PickUpArtefact(AArtefactBase* ArtefactToPickUp)
+void AArtefactJuggleCharacter::PickUpArtefact_Implementation(AArtefactBase* ArtefactToPickUp)
 {
 	// Säkerhetsspärr: Avbryt om stenen är tom eller om vi redan bär på något
-	if (ArtefactToPickUp == nullptr || bIsHoldingArtefact)
+	if (ArtefactToPickUp == nullptr || bIsHoldingArtefact || ArtefactToPickUp->GetOwner() != nullptr)
 	{
 		GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Yellow, TEXT("C++: PickUp failed - Invalid or already holding."));
 		return;
 	}
-
+	
 	UArtefactManipulator* Manipulator = FindComponentByClass<UArtefactManipulator>();
 	if (Manipulator)
 	{
 		// 1. Tilldela stenen till manipulatorn och karaktärens referens
 		Manipulator->EquippedArtefact = ArtefactToPickUp;
 		CurrentArtefact = ArtefactToPickUp; // Er befintliga backup-referens
+
+		ArtefactToPickUp->SetReplicateMovement(false);
 
 		UPrimitiveComponent* ArtefactRoot = Cast<UPrimitiveComponent>(ArtefactToPickUp->GetRootComponent());
 		if (ArtefactRoot)
@@ -183,41 +205,24 @@ void AArtefactJuggleCharacter::PickUpArtefact(AArtefactBase* ArtefactToPickUp)
 			ArtefactRoot->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Ignore);
 		}
 
-		// 3. Hitta SlotForward dynamiskt bland Mesh-komponentens barn (era Blueprint Scene Components)
-		USceneComponent* MeshComponent = GetMesh();
-		USceneComponent* TargetSlot = nullptr;
+		// 2. SÄTT STARTLÄGET DIREKT I DATA
+		ArtefactToPickUp->CurrentPosition = EArtifactPosition::Forward;
 
-		if (MeshComponent)
-		{
-			TArray<USceneComponent*> FoundChildren;
-			MeshComponent->GetChildrenComponents(true, FoundChildren);
-
-			for (USceneComponent* Child : FoundChildren)
-			{
-				if (Child && Child->GetName() == TEXT("SlotForward"))
-				{
-					TargetSlot = Child;
-					break;
-				}
-			}
-		}
-
-		// Använd SlotForward om den hittades, annars karaktärens Mesh som säkerhetsmarginal
-		USceneComponent* AttachParent = TargetSlot ? TargetSlot : MeshComponent;
-
-		if (TargetSlot == nullptr)
-			GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, TEXT("C++: TergetSlot = nullptr!"));
-
-		// 4. ATTACH TO CHARACTER: Flytta och limma stenen direkt till sloten
+		// 3. PROFESSIONELL ATTACHMENT:
+		// Istället för den tunga text-loopen, fäster vi stenen direkt till karaktärens Mesh!
 		FAttachmentTransformRules AttachRules(
-			EAttachmentRule::SnapToTarget, // Roterar och flyttar stenen direkt till slotens nollpunkt
+			EAttachmentRule::SnapToTarget,
 			EAttachmentRule::SnapToTarget,
 			EAttachmentRule::KeepWorld,
 			false
 		);
-		ArtefactToPickUp->AttachToComponent(AttachParent, AttachRules);
+		ArtefactToPickUp->AttachToComponent(GetMesh(), AttachRules);
 
 		bIsHoldingArtefact = true;
+
+		ArtefactToPickUp->SetOwner(this);
+		ArtefactToPickUp->CurrentPosition = EArtifactPosition::Forward;
+		Manipulator->ResetCurrentPosition();
 
 		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Cyan, TEXT("C++: Artefact Attached to SlotForward successfully!"));
 	}
@@ -281,49 +286,21 @@ void AArtefactJuggleCharacter::DropArtefact()
 	FVector FinalDropLocation = GroundHit.Location;
 	FinalDropLocation.Z += ArtefactHalfHeight;
 
-	// 6. SUCCESSFUL DROP EXECUTED BELOW: Disconnect from character now that the path is verified safe
-	StopArtefactJuggle();
-
-	FDetachmentTransformRules DetachRules(
-		EDetachmentRule::KeepWorld,
-		EDetachmentRule::KeepWorld,
-		EDetachmentRule::KeepWorld,
-		true
-	);
-	CurrentArtefact->DetachFromActor(DetachRules);
-
-	// Apply final location.
-	CurrentArtefact->SetActorLocation(FinalDropLocation);
-	
-
-	// Re-enable query collision for puzzle overlapping, keeping physics simulation false for absolute stability
-	UPrimitiveComponent* ArtefactRoot = Cast<UPrimitiveComponent>(CurrentArtefact->GetRootComponent());
-	if (ArtefactRoot)
-	{
-		ArtefactRoot->SetCollisionResponseToChannel(ECC_Pawn, ECR_Block);
-		ArtefactRoot->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
-		ArtefactRoot->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
-	}
-
-	// Clear references in the manipulator and character
+	// 6. CALL SERVER FUNCTION TO EXECUTE THE DROP: This ensures the server validates and replicates the drop to all clients
 	UArtefactManipulator* Manipulator = FindComponentByClass<UArtefactManipulator>();
 	if (Manipulator)
 	{
-		Manipulator->EquippedArtefact = nullptr;
-		Manipulator->bIsControllingArtefact = false;
-		Manipulator->ResetCurrentPosition();
+		// Call the server function with both the final drop location and the desired rotation
+		Manipulator->Server_DropArtefact(CurrentArtefact, FinalDropLocation, PutdownRotation);
 	}
-
-	CurrentArtefact = nullptr;
-	bIsHoldingArtefact = false;
-
-	GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Orange, TEXT("C++: Artefact Dropped safely on ground!"));
+	else
+		GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Red, TEXT("C++: Cannot drop artefact - Manipulator component missing!"));
 }
 
 void AArtefactJuggleCharacter::StartArtefactJuggle()
 {
 	// Only activate control if there actually is an artefact.
-	if (bIsHoldingArtefact && CurrentArtefact)
+	if (bIsHoldingArtefact && CurrentArtefact != nullptr)
 	{
 		bIsModifierPressed = true;
 
@@ -333,12 +310,10 @@ void AArtefactJuggleCharacter::StartArtefactJuggle()
 			// Tell the manipulator that we started to control the artefact.
 			Manipulator->bIsControllingArtefact = true;
 			// Set the control neutralizer to false, to avoid having the artefact move immediately when you press the shiftArtefact-button.
-			// if ()
 			Manipulator->bHasNeutralizedInput = false;
 		}
 	}
 }
-
 void AArtefactJuggleCharacter::StopArtefactJuggle()
 {
 	bIsModifierPressed = false;

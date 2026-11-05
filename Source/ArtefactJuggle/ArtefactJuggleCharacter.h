@@ -50,20 +50,13 @@ protected:
 	UInputAction* MouseLookAction;
 
 	// Keeps track of if the player is pushing the modifier-button.
-	UPROPERTY(BlueprintReadWrite, Category = "Artefact Juggle")
+	UPROPERTY(Replicated, BlueprintReadWrite, Category = "Artefact Juggle")
 	bool bIsModifierPressed = false;
-
-	// Keeps track of if the player is holding an artefact.
-	UPROPERTY(BlueprintReadWrite, Category = "Artefact Juggle")
-	bool bIsHoldingArtefact = false;
 
 public:
 
 	/** Constructor */
 	AArtefactJuggleCharacter();
-
-	UPROPERTY(BlueprintReadWrite, Category = "Artefact Juggle")
-	AArtefactBase* CurrentArtefact;
 
 protected:
 
@@ -82,6 +75,8 @@ protected:
 
 public:
 
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
 	/** Handles move inputs from either controls or UI interfaces */
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoMove(float Right, float Forward);
@@ -99,7 +94,7 @@ public:
 	virtual void DoJumpEnd();
 
 	// MÅL 1 & 2: Funktion som ENBART sköter upplockning och fastsättning (Attach)
-	UFUNCTION(BlueprintCallable, Category = "Artefact Juggle")
+	UFUNCTION(BlueprintCallable, Server, Reliable, Category = "Artefact Juggle")
 	void PickUpArtefact(AArtefactBase* ArtefactToPickUp);
 
 	UFUNCTION(BlueprintCallable, Category = "Artefact Juggle")
@@ -112,6 +107,15 @@ public:
 	// Släpper modifieraren och ger tillbaka WASD-kontrollen
 	UFUNCTION(BlueprintCallable, Category = "Artefact Juggle")
 	void StopArtefactJuggle();
+
+public:
+	// Keeps track of the artefact the player is currently holding.
+	UPROPERTY(Replicated, BlueprintReadWrite, Category = "Artefact Juggle")
+	AArtefactBase* CurrentArtefact;
+
+	// Keeps track of if the player is holding an artefact.
+	UPROPERTY(Replicated, BlueprintReadWrite, Category = "Artefact Juggle")
+	bool bIsHoldingArtefact = false;
 
 public:
 
