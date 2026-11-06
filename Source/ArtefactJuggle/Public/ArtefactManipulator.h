@@ -39,9 +39,14 @@ public:
 	UPROPERTY(Replicated, BlueprintReadWrite, Category = "Artefact")
 	class AArtefactBase* EquippedArtefact;
 
+	// UPROPERTY(Replicated, BlueprintReadWrite, Category = "Artefact")
+	bool bHasNeutralizedInput;
+
 	UPROPERTY(BlueprintReadWrite, Category = "Artefact")
 	bool bIsControllingArtefact;
-	bool bHasNeutralizedInput;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Artefact")
+	bool bIsGonnaPutDownArtefact;
 
 protected:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Artefact")

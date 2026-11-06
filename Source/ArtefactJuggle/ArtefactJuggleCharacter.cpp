@@ -92,22 +92,19 @@ void AArtefactJuggleCharacter::SetupPlayerInputComponent(UInputComponent* Player
 
 void AArtefactJuggleCharacter::Move(const FInputActionValue& Value)
 {
+	bIsPressingMove = true;
+
 	FVector2D MovementVector = Value.Get<FVector2D>();
 
-	// If the player is actively controlling the artefact, freeze WASD movement
+	// If the player is actively controlling the artefact, freeze movement.
 	if (bIsModifierPressed)
-	{
+	{		
 		UArtefactManipulator* Manipulator = FindComponentByClass<UArtefactManipulator>();
+
 		if (Manipulator && FollowCamera)
 		{
 			// Get the camera's forward vector to determine screen space direction
 			FVector CameraForward = FollowCamera->GetForwardVector();
-
-			// Trying to make it so that the player doesn't have to press twice when using WASD.
-			/*bool bIsAnalogStick = (MovementVector.SizeSquared() > 0.0f && MovementVector.SizeSquared() < 0.99f);
-
-			if (!bIsAnalogStick && MovementVector.SizeSquared() == 0.0f)
-				Manipulator->bHasNeutralizedInput = true;*/
 			
 			// Pass both the input vector AND the camera direction to the manipulator
 			Manipulator->HandleDirectionInput(MovementVector, CameraForward);
@@ -120,7 +117,7 @@ void AArtefactJuggleCharacter::Move(const FInputActionValue& Value)
 
 void AArtefactJuggleCharacter::FinishedJuggleMove()
 {
-	if (!bIsModifierPressed) return;
+	bIsPressingMove = false;
 
 	UArtefactManipulator* Manipulator = FindComponentByClass<UArtefactManipulator>();
 	if (Manipulator)
@@ -193,6 +190,9 @@ void AArtefactJuggleCharacter::PickUpArtefact_Implementation(AArtefactBase* Arte
 	{
 		// 1. Tilldela stenen till manipulatorn och karaktärens referens
 		Manipulator->EquippedArtefact = ArtefactToPickUp;
+
+		// Försök att stoppa Manipulators tick från att interpolera artefakten när den sen ska sättas ner.
+		Manipulator->bIsGonnaPutDownArtefact = false;
 		CurrentArtefact = ArtefactToPickUp; // Er befintliga backup-referens
 
 		ArtefactToPickUp->SetReplicateMovement(false);
@@ -232,6 +232,17 @@ void AArtefactJuggleCharacter::DropArtefact()
 	// 1. SAFETY CHECK: Abort if we are not holding an artefact or the reference is invalid
 	if (!bIsHoldingArtefact || CurrentArtefact == nullptr) return;
 
+	UArtefactManipulator* Manipulator = FindComponentByClass<UArtefactManipulator>();
+	if (Manipulator)
+	{
+		Manipulator->bIsGonnaPutDownArtefact = true;
+	}
+	else
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Red, TEXT("C++: Manipulator component missing!"));
+		return;
+	}
+
 	// 2. PRE-COMPUTE GROUND TRACE CONDITIONS FIRST
 	// Start from the character's reliable center point (immune to being inside walls)
 	FVector CharacterCenter = GetActorLocation();
@@ -264,22 +275,28 @@ void AArtefactJuggleCharacter::DropArtefact()
 	if (!GetWorld()->LineTraceSingleByChannel(GroundHit, GroundTraceStart, GroundTraceEnd, ECC_Visibility, TraceParams))
 	{
 		// BLOCKED MECHANIC: No ground detected within 200 units. Abort the drop entirely!
+		Manipulator->bIsGonnaPutDownArtefact = false;
 		GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Red, TEXT("C++: Cannot drop here - Ground too far down or abyss!"));
 		return;
 	}
 
 	FRotator CharacterRotation = GetActorRotation();
 	FRotator PutdownRotation = FRotator(0.0f, CharacterRotation.Yaw - 90.0f, 0.0f);
-	CurrentArtefact->SetActorRotation(PutdownRotation);
+	// CurrentArtefact->SetActorRotation(PutdownRotation);
 
 	// 5. CALCULATE ARTEFACT DIMENSIONS: Get the real-world bounding box to snap perfectly to the floor
 	float ArtefactHalfHeight = 0.0f;
 	UStaticMeshComponent* ArtefactMesh = CurrentArtefact->FindComponentByClass<UStaticMeshComponent>();
-	if (ArtefactMesh)
+	if (ArtefactMesh && ArtefactMesh->GetStaticMesh())
 	{
-		// Native C++ uses the built-in 'Bounds' property, which is already in world-space
-		// BoxExtent.Z is the exact half-height of the mesh, taking scale/rotation into account!
-		ArtefactHalfHeight = ArtefactMesh->Bounds.BoxExtent.Z;
+		// 1. Hämta storleken på 3D-modellen i dess helt oroterade grundläge
+		FVector LocalExtent = ArtefactMesh->GetStaticMesh()->GetExtendedBounds().BoxExtent;
+
+		// 2. Multiplicera med den unika Z-skalan som du satt i editorn
+		float LocalScaleZ = ArtefactMesh->GetComponentScale().Z;
+
+		// 3. Nu har vi en helt konstant halvhöjd för när stenen står upprätt!
+		ArtefactHalfHeight = LocalExtent.Z * LocalScaleZ;
 	}
 
 	// Calculate final world position sitting flat on the detected ground
@@ -287,7 +304,6 @@ void AArtefactJuggleCharacter::DropArtefact()
 	FinalDropLocation.Z += ArtefactHalfHeight;
 
 	// 6. CALL SERVER FUNCTION TO EXECUTE THE DROP: This ensures the server validates and replicates the drop to all clients
-	UArtefactManipulator* Manipulator = FindComponentByClass<UArtefactManipulator>();
 	if (Manipulator)
 	{
 		// Call the server function with both the final drop location and the desired rotation
@@ -309,8 +325,11 @@ void AArtefactJuggleCharacter::StartArtefactJuggle()
 		{
 			// Tell the manipulator that we started to control the artefact.
 			Manipulator->bIsControllingArtefact = true;
-			// Set the control neutralizer to false, to avoid having the artefact move immediately when you press the shiftArtefact-button.
-			Manipulator->bHasNeutralizedInput = false;
+
+			if (bIsPressingMove)
+				Manipulator->bHasNeutralizedInput = false;
+			else
+				Manipulator->bHasNeutralizedInput = true;
 		}
 	}
 }

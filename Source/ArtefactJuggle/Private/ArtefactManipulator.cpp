@@ -14,6 +14,7 @@ UArtefactManipulator::UArtefactManipulator()
 	CurrentPosition = EArtifactPosition::Forward;
 	InterpSpeed = 10.0f;
 	bIsControllingArtefact = false;
+	bIsGonnaPutDownArtefact = false;
 	bHasNeutralizedInput = true;
 	EquippedArtefact = nullptr;
 }
@@ -27,7 +28,9 @@ void UArtefactManipulator::TickComponent(float DeltaTime, ELevelTick TickType, F
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-	if (EquippedArtefact && EquippedArtefact->GetRootComponent())
+	if (bIsGonnaPutDownArtefact) return;
+
+	if (EquippedArtefact != nullptr && EquippedArtefact->GetRootComponent())
 	{
 		USceneComponent* ArtefactRoot = EquippedArtefact->GetRootComponent();
 
@@ -259,43 +262,44 @@ void UArtefactManipulator::Server_DropArtefact_Implementation(AArtefactBase* Art
 {
 	if (ArtefactToDrop == nullptr) return;
 
-	// 1. Fetch the character (owner of the component).
+	// Fetch the character (owner of the component).
 	AArtefactJuggleCharacter* CharOwner = Cast<AArtefactJuggleCharacter>(GetOwner());
 	if (!CharOwner) return;
 
-	// 2. Enable movement replication again.
-	ArtefactToDrop->SetReplicateMovement(true);
-	ArtefactToDrop->SetActorRotation(FinalRotation);
+	// FIX 1: Turn off the control states IMMEDIATELY so TickComponent stops interpolating this frame!
+	EquippedArtefact = nullptr;
+	bIsControllingArtefact = false;
 
-	// 3. Shut off controlling mode and reset the character's juggling state.
-	
+	CharOwner->StopArtefactJuggle();
+	CharOwner->CurrentArtefact = nullptr;
+	CharOwner->bIsHoldingArtefact = false;
 
-	// 4. Detach.
+	// FIX 2: Perform DETACH first before we touch any positions or network movement replication
 	FDetachmentTransformRules DetachRules(EDetachmentRule::KeepWorld, true);
 	ArtefactToDrop->DetachFromActor(DetachRules);
-	ArtefactToDrop->SetActorLocation(FinalLocation);
 
-	// 5. Reset network owner (important!).
-	ArtefactToDrop->SetOwner(nullptr);
-	ArtefactToDrop->CurrentPosition = EArtifactPosition::None;
-
-	// 6. Restore collisions.
-	UPrimitiveComponent* ArtefactRoot = Cast<UPrimitiveComponent>(ArtefactToDrop->GetRootComponent());
-	if (ArtefactRoot)
+	// FIX 3: Force the root component (Mesh) to clear any active interpolation offsets
+	if (UPrimitiveComponent* ArtefactRoot = Cast<UPrimitiveComponent>(ArtefactToDrop->GetRootComponent()))
 	{
+		// Set both Actor and Component rotation to the straight upright target rotation
+		ArtefactToDrop->SetActorRotation(FinalRotation);
+		ArtefactRoot->SetWorldRotation(FinalRotation);
+
+		// Restore collision channels
 		ArtefactRoot->SetCollisionResponseToChannel(ECC_Pawn, ECR_Block);
 		ArtefactRoot->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
 		ArtefactRoot->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
 	}
 
-	// 7. Reset variables on the component and character.
-	EquippedArtefact = nullptr;
-	bIsControllingArtefact = false;
+	// FIX 4: Apply the exact world location on the server and enable movement replication LAST
+	ArtefactToDrop->SetActorLocation(FinalLocation);
+	ArtefactToDrop->SetReplicateMovement(true);
+
 	ResetCurrentPosition();
 
-	CharOwner->StopArtefactJuggle();
-	CharOwner->CurrentArtefact = nullptr;
-	CharOwner->bIsHoldingArtefact = false;
+	// 5. Reset network ownership and state
+	ArtefactToDrop->SetOwner(nullptr);
+	ArtefactToDrop->CurrentPosition = EArtifactPosition::None;
 }
 
 FTransform UArtefactManipulator::GetTargetSlotTransform(EArtifactPosition Position) const
@@ -346,7 +350,7 @@ void UArtefactManipulator::ResetCurrentPosition()
 
 	bHasNeutralizedInput = true;
 
-	if (EquippedArtefact)
+	if (EquippedArtefact != nullptr)
 	{
 		EquippedArtefact->CurrentPosition = EArtifactPosition::Forward;
 	}

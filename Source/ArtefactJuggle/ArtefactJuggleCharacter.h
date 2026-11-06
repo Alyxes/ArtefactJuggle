@@ -53,6 +53,8 @@ protected:
 	UPROPERTY(Replicated, BlueprintReadWrite, Category = "Artefact Juggle")
 	bool bIsModifierPressed = false;
 
+	bool bIsPressingMove = false;
+
 public:
 
 	/** Constructor */
@@ -93,18 +95,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoJumpEnd();
 
-	// MÅL 1 & 2: Funktion som ENBART sköter upplockning och fastsättning (Attach)
 	UFUNCTION(BlueprintCallable, Server, Reliable, Category = "Artefact Juggle")
 	void PickUpArtefact(AArtefactBase* ArtefactToPickUp);
 
 	UFUNCTION(BlueprintCallable, Category = "Artefact Juggle")
 	void DropArtefact();
 
-	// MÅL 3: Aktiverar modifieraren och fryser WASD (Kopplas till IA_ShiftToggle)
 	UFUNCTION(BlueprintCallable, Category = "Artefact Juggle")
-	void StartArtefactJuggle(); // Vi tar bort argumentet härifrån!
+	void StartArtefactJuggle();
 
-	// Släpper modifieraren och ger tillbaka WASD-kontrollen
 	UFUNCTION(BlueprintCallable, Category = "Artefact Juggle")
 	void StopArtefactJuggle();
 
