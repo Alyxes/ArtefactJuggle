@@ -65,7 +65,9 @@ protected:
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
-protected:
+	virtual void BeginPlay() override;
+
+	virtual void OnMovementModeChanged(EMovementMode PrevMovementMode, uint8 PreviousCustomMode = 0) override;
 
 	/** Called for movement input */
 	void Move(const FInputActionValue& Value);
@@ -73,7 +75,14 @@ protected:
 	/** Called for looking input */
 	void Look(const FInputActionValue& Value);
 
+	UFUNCTION()
+	void OnRep_CurrentArtefact();
+
 	void FinishedJuggleMove();
+
+protected:
+
+	float DefaultWalkSpeed;
 
 public:
 
@@ -107,9 +116,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Artefact Juggle")
 	void StopArtefactJuggle();
 
+	void UpdateMovementSpeed();
+
+	void UpdateRotationRate();
+
 public:
 	// Keeps track of the artefact the player is currently holding.
-	UPROPERTY(Replicated, BlueprintReadWrite, Category = "Artefact Juggle")
+	UPROPERTY(ReplicatedUsing = OnRep_CurrentArtefact, BlueprintReadWrite, Category = "Artefact Juggle")
 	AArtefactBase* CurrentArtefact;
 
 	// Keeps track of if the player is holding an artefact.
@@ -124,4 +137,3 @@ public:
 	/** Returns FollowCamera subobject **/
 	FORCEINLINE class UCameraComponent* GetFollowCamera() const { return FollowCamera; }
 };
-

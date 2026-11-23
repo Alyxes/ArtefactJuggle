@@ -30,7 +30,7 @@ void UArtefactManipulator::TickComponent(float DeltaTime, ELevelTick TickType, F
 
 	if (bIsGonnaPutDownArtefact) return;
 
-	if (EquippedArtefact != nullptr && EquippedArtefact->GetRootComponent())
+	if (EquippedArtefact != nullptr && EquippedArtefact->bIsBeingCarried && EquippedArtefact->GetRootComponent())
 	{
 		USceneComponent* ArtefactRoot = EquippedArtefact->GetRootComponent();
 
@@ -260,6 +260,7 @@ void UArtefactManipulator::Server_ChangePosition_Implementation(EArtifactPositio
 
 void UArtefactManipulator::Server_DropArtefact_Implementation(AArtefactBase* ArtefactToDrop, FVector FinalLocation, FRotator FinalRotation)
 {
+	GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Yellow, FString::Printf(TEXT("SERVER_DROP KÖRS! Artefact: %s | Loc: %s"), *GetNameSafe(ArtefactToDrop), *FinalLocation.ToString()));
 	if (ArtefactToDrop == nullptr) return;
 
 	// Fetch the character (owner of the component).
@@ -271,35 +272,45 @@ void UArtefactManipulator::Server_DropArtefact_Implementation(AArtefactBase* Art
 	bIsControllingArtefact = false;
 
 	CharOwner->StopArtefactJuggle();
+
 	CharOwner->CurrentArtefact = nullptr;
 	CharOwner->bIsHoldingArtefact = false;
+	// These should be after setting CurrentArtefact to nullptr, because their logic is based on that it is.
+	CharOwner->UpdateMovementSpeed();
+	CharOwner->UpdateRotationRate();
 
-	// FIX 2: Perform DETACH first before we touch any positions or network movement replication
-	FDetachmentTransformRules DetachRules(EDetachmentRule::KeepWorld, true);
-	ArtefactToDrop->DetachFromActor(DetachRules);
+	ResetCurrentPosition();
+
+	// FIX 2: Perform DETACH first before we touch any positions or network movement replication.
+
+	ArtefactToDrop->Multicast_OnDropped(FinalLocation, FinalRotation);
+
+	/*FDetachmentTransformRules DetachRules(EDetachmentRule::KeepWorld, true);
+	ArtefactToDrop->DetachFromActor(DetachRules);*/
 
 	// FIX 3: Force the root component (Mesh) to clear any active interpolation offsets
 	if (UPrimitiveComponent* ArtefactRoot = Cast<UPrimitiveComponent>(ArtefactToDrop->GetRootComponent()))
 	{
 		// Set both Actor and Component rotation to the straight upright target rotation
-		ArtefactToDrop->SetActorRotation(FinalRotation);
-		ArtefactRoot->SetWorldRotation(FinalRotation);
+		//ArtefactToDrop->SetActorLocationAndRotation(FinalLocation, FinalRotation, false, nullptr, ETeleportType::TeleportPhysics);
+		//// ArtefactToDrop->SetActorRotation(FinalRotation);
+		//ArtefactRoot->SetWorldRotation(FinalRotation);
 
 		// Restore collision channels
 		ArtefactRoot->SetCollisionResponseToChannel(ECC_Pawn, ECR_Block);
 		ArtefactRoot->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
 		ArtefactRoot->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
 	}
+	
+	// ArtefactToDrop->SetReplicateMovement(true);
 
-	// FIX 4: Apply the exact world location on the server and enable movement replication LAST
-	ArtefactToDrop->SetActorLocation(FinalLocation);
-	ArtefactToDrop->SetReplicateMovement(true);
-
-	ResetCurrentPosition();
-
-	// 5. Reset network ownership and state
-	ArtefactToDrop->SetOwner(nullptr);
 	ArtefactToDrop->CurrentPosition = EArtifactPosition::None;
+	ArtefactToDrop->OnDropped();
+
+	// 5. Reset network ownership.
+	ArtefactToDrop->SetOwner(nullptr);
+
+	ArtefactToDrop->ForceNetUpdate();
 }
 
 FTransform UArtefactManipulator::GetTargetSlotTransform(EArtifactPosition Position) const
