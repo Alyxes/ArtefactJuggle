@@ -31,7 +31,7 @@ void AArtefactBase::Tick(float DeltaTime)
     Super::Tick(DeltaTime);
 }
 
-// 3. NÄTVERKS-REGISTRERING: Här talar vi om för UE vilka variabler som ska skickas över nätet
+// NÄTVERKS-REGISTRERING: Här talar vi om för UE vilka variabler som ska skickas över nätet
 void AArtefactBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
@@ -51,6 +51,8 @@ void AArtefactBase::UpdateCollisionBasedOnState()
 
 	if (CurrentPosition == EArtifactPosition::None)
 	{
+		SetReplicateMovement(true);
+
 		if (bCollisionIsDisabled)
 		{
 			/*ArtefactMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
@@ -67,6 +69,8 @@ void AArtefactBase::UpdateCollisionBasedOnState()
 	}
 	else
 	{
+		SetReplicateMovement(false);
+
 		if (!bCollisionIsDisabled)
 		{
 			// ArtefactMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);

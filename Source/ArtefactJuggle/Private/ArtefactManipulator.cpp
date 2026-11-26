@@ -293,7 +293,7 @@ void UArtefactManipulator::Server_DropArtefact_Implementation(AArtefactBase* Art
 
 	// FIX 4: Apply the exact world location on the server and enable movement replication LAST
 	ArtefactToDrop->SetActorLocation(FinalLocation);
-	ArtefactToDrop->SetReplicateMovement(true);
+	// ArtefactToDrop->SetReplicateMovement(true);
 
 	ResetCurrentPosition();
 
@@ -347,6 +347,8 @@ FTransform UArtefactManipulator::GetTargetSlotTransform(EArtifactPosition Positi
 void UArtefactManipulator::ResetCurrentPosition()
 {
 	CurrentPosition = EArtifactPosition::Forward;
+
+	bIsGonnaPutDownArtefact = false;
 
 	bHasNeutralizedInput = true;
 

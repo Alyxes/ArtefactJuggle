@@ -195,7 +195,7 @@ void AArtefactJuggleCharacter::PickUpArtefact_Implementation(AArtefactBase* Arte
 		Manipulator->bIsGonnaPutDownArtefact = false;
 		CurrentArtefact = ArtefactToPickUp; // Er befintliga backup-referens
 
-		ArtefactToPickUp->SetReplicateMovement(false);
+		// ArtefactToPickUp->SetReplicateMovement(false);
 
 		UPrimitiveComponent* ArtefactRoot = Cast<UPrimitiveComponent>(ArtefactToPickUp->GetRootComponent());
 		if (ArtefactRoot)
