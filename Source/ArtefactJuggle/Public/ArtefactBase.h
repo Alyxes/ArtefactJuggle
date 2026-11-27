@@ -4,53 +4,58 @@
 #include "GameFramework/Actor.h"
 #include "ArtefactBase.generated.h"
 
-// Vår nätverkssäkrade enum för de 5 fasta riktningarna samt ett tomt läge (None)
+// Network-safe enum for the 5 fixed slots plus an empty state (None)
 UENUM(BlueprintType)
 enum class EArtifactPosition : uint8
 {
-    Forward   UMETA(DisplayName = "Forward"),
-    Left      UMETA(DisplayName = "Left"),
-    Right     UMETA(DisplayName = "Right"),
-    Up        UMETA(DisplayName = "Up"),
-    Down      UMETA(DisplayName = "Down"),
-    None      UMETA(DisplayName = "None")
+	Forward   UMETA(DisplayName = "Forward"),
+	Left      UMETA(DisplayName = "Left"),
+	Right     UMETA(DisplayName = "Right"),
+	Up        UMETA(DisplayName = "Up"),
+	Down      UMETA(DisplayName = "Down"),
+	None      UMETA(DisplayName = "None")
 };
 
 UCLASS()
 class ARTEFACTJUGGLE_API AArtefactBase : public AActor
 {
-    GENERATED_BODY()
+	GENERATED_BODY()
 
 public:
-    // Konstruktor: Här sätter vi startinställningar för klassen
-    AArtefactBase();
+	AArtefactBase();
 
 protected:
-    // Körs en gång när spelet startar eller objektet spawnas
-    virtual void BeginPlay() override;
+	virtual void BeginPlay() override;
 
-    UFUNCTION()
-    void OnRep_CurrentPosition();
+	// Automatically called on clients when CurrentPosition replicates, and manually called on the server
+	UFUNCTION()
+	void OnRep_CurrentPosition();
 
-    // En hjälpfunktion för att hålla koden modulär och ren
-    void UpdateCollisionBasedOnState();
-
-private:
-
-    bool bCollisionIsDisabled = false;
+	// Central helper function that updates collision and movement replication based on CurrentPosition
+	void UpdateStateConfiguration();
 
 public:
-    // Körs varje frame
-    virtual void Tick(float DeltaTime) override;
+	virtual void Tick(float DeltaTime) override;
 
-    // Denna funktion krävs av Unreal för att registrera nätverksreplikerade variabler
-    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
-    // Den fysiska stenen (mesh) som syns i världen
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Artefact|Components")
-    UStaticMeshComponent* ArtefactMesh;
+	// Server-authoritative setter: Call this whenever the artefact changes state (picked up, moved slot, or dropped)
+	UFUNCTION(BlueprintCallable, Category = "Artefact|State")
+	void SetArtefactPosition(EArtifactPosition NewPosition);
 
-    // Variabeln som håller koll på var stenen är just nu (Replicated = nätverkssäkrad)
-    UPROPERTY(ReplicatedUsing = OnRep_CurrentPosition, BlueprintReadOnly, Category = "Artefact|State")
-    EArtifactPosition CurrentPosition;
+	UFUNCTION(BlueprintPure, Category = "Artefact|State")
+	EArtifactPosition GetArtefactPosition() const { return CurrentPosition; }
+
+	// Broadcasts an instant teleport to all clients when dropped so spectators don't see uneven network smoothing
+	UFUNCTION(NetMulticast, Reliable)
+	void Multicast_OnDropped(FVector DropLocation, FRotator DropRotation);
+
+	// The physical mesh visible in the world
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Artefact|Components")
+	UStaticMeshComponent* ArtefactMesh;
+
+protected:
+	// Replicated state variable. Only modified via SetArtefactPosition on the server.
+	UPROPERTY(ReplicatedUsing = OnRep_CurrentPosition, BlueprintReadOnly, Category = "Artefact|State")
+	EArtifactPosition CurrentPosition;
 };

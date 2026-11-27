@@ -53,5 +53,9 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Artefact Settings")
 	float InterpSpeed;
 
+	// Local offset and rotation relative to the character's mesh (eliminates movement lag)
+	FVector CurrentLocalOffset;
+	FRotator CurrentLocalRotation;
+
 	FTransform GetTargetSlotTransform(EArtifactPosition Position) const;
 };

@@ -1,87 +1,104 @@
 #include "ArtefactBase.h"
-#include "Net/UnrealNetwork.h" // Livsviktigt makro-bibliotek för nätverksreplikering (DOREPLIFETIME)
+#include "Net/UnrealNetwork.h"
 
-// Konstruktorn: Här bygger vi upp objektets grundkomponenter i minnet
 AArtefactBase::AArtefactBase()
 {
-    // Slå på Tick om du vill att denna Actor ska köra logik varje bildruta (kan stängas av senare för prestanda)
-    PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bCanEverTick = true;
 
-    // 1. SÄTT UPP NÄTVERK: Berätta för motorn att detta objekt är viktigt över nätverket
-    bReplicates = true;
-    SetReplicateMovement(true); // Synkar automatiskt position/fysik över nätverket när den är lös
+	// Enable network replication and movement replication by default (since it starts on the ground)
+	bReplicates = true;
+	SetReplicateMovement(true);
 
-    // 2. SKAPA KOMPONENT: Skapa vår Static Mesh i minnet
-    ArtefactMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ArtefactMesh"));
+	ArtefactMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ArtefactMesh"));
+	RootComponent = ArtefactMesh;
 
-    // Sätt meshen som rotkomponent (objektets absoluta mittpunkt i världen)
-    RootComponent = ArtefactMesh;
-
-    // Sätt startläget till None eftersom ingen håller i den när den spawnas på marken
-    CurrentPosition = EArtifactPosition::None;
+	CurrentPosition = EArtifactPosition::None;
 }
 
 void AArtefactBase::BeginPlay()
 {
-    Super::BeginPlay();
+	Super::BeginPlay();
+
+	// Ensure initial collision and replication settings match the starting state
+	UpdateStateConfiguration();
 }
 
 void AArtefactBase::Tick(float DeltaTime)
 {
-    Super::Tick(DeltaTime);
+	Super::Tick(DeltaTime);
 }
 
-// NÄTVERKS-REGISTRERING: Här talar vi om för UE vilka variabler som ska skickas över nätet
 void AArtefactBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
-    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
-    // Detta makro säger: "Skicka CurrentPosition från Servern till alla Klienter så fort den ändras"
-    DOREPLIFETIME(AArtefactBase, CurrentPosition);
+	DOREPLIFETIME(AArtefactBase, CurrentPosition);
 }
+
+void AArtefactBase::SetArtefactPosition(EArtifactPosition NewPosition)
+{
+	// Only the server (or Standalone player) is allowed to change the authoritative state
+	if (!HasAuthority()) return;
+
+	if (CurrentPosition != NewPosition)
+	{
+		CurrentPosition = NewPosition;
+
+		// Manually call OnRep on the server because C++ only triggers OnRep automatically on clients
+		OnRep_CurrentPosition();
+	}
+}
+
 void AArtefactBase::OnRep_CurrentPosition()
 {
-	// Körs AUTOMATISKT på alla klienter när servern ändrar CurrentPosition!
-	UpdateCollisionBasedOnState();
+	// Runs on both the server (via SetArtefactPosition) and all clients (via replication)
+	UpdateStateConfiguration();
 }
 
-void AArtefactBase::UpdateCollisionBasedOnState()
+void AArtefactBase::UpdateStateConfiguration()
 {
 	if (!ArtefactMesh) return;
 
 	if (CurrentPosition == EArtifactPosition::None)
 	{
-		SetReplicateMovement(true);
+		ArtefactMesh->SetCollisionResponseToChannel(ECC_Pawn, ECR_Block);
+		ArtefactMesh->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
+		ArtefactMesh->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
 
-		if (bCollisionIsDisabled)
+		// Only the server runs physics simulation; clients receive movement via replication.
+		if (HasAuthority())
 		{
-			/*ArtefactMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-			ArtefactMesh->SetCollisionResponseToAllChannels(ECR_Block);*/
+			ArtefactMesh->SetSimulatePhysics(true);
+			ArtefactMesh->WakeAllRigidBodies();
+		}
 
-			ArtefactMesh->SetCollisionResponseToChannel(ECC_Pawn, ECR_Block);
-			ArtefactMesh->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
-			ArtefactMesh->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
-
-			bCollisionIsDisabled = false;
-
-			GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Green, TEXT("C++ Fysik: Kollision påslagen"));
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Green, TEXT("C++ State: On Ground (Collision & Movement Rep ON)"));
 		}
 	}
 	else
 	{
-		SetReplicateMovement(false);
+		ArtefactMesh->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+		ArtefactMesh->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Ignore);
+		ArtefactMesh->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Ignore);
 
-		if (!bCollisionIsDisabled)
+		// Turn off physics on both server and client so gravity doesn't pull it out of the player's hands.
+		ArtefactMesh->SetSimulatePhysics(false);
+
+		if (GEngine)
 		{
-			// ArtefactMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-
-			ArtefactMesh->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
-			ArtefactMesh->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Ignore);
-			ArtefactMesh->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Ignore);
-
-			bCollisionIsDisabled = true;
-
-			GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Yellow, TEXT("C++ Fysik: Kollision avslagen"));
+			GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Yellow, TEXT("C++ State: Held (Collision & Movement Rep OFF)"));
 		}
+	}
+}
+
+void AArtefactBase::Multicast_OnDropped_Implementation(FVector DropLocation, FRotator DropRotation)
+{
+	// On clients (spectators), snap immediately to the server's authoritative drop location
+	// so Unreal's network smoothing doesn't make the stone glide unevenly from the previous player's hand.
+	if (!HasAuthority())
+	{
+		SetActorLocationAndRotation(DropLocation, DropRotation, false, nullptr, ETeleportType::TeleportPhysics);
 	}
 }

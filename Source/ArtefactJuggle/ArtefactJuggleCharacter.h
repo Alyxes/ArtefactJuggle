@@ -62,6 +62,13 @@ public:
 
 protected:
 
+	// Runs after Blueprint component defaults are loaded, but before BeginPlay and movement updates
+	virtual void PostInitializeComponents() override;
+	virtual void BeginPlay() override;
+
+	// Automatically called on both client and server whenever movement mode changes (e.g., Walking <-> Falling)
+	virtual void OnMovementModeChanged(EMovementMode PrevMovementMode, uint8 PreviousCustomMode = 0) override;
+
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
@@ -123,4 +130,9 @@ public:
 
 	/** Returns FollowCamera subobject **/
 	FORCEINLINE class UCameraComponent* GetFollowCamera() const { return FollowCamera; }
+
+private:
+
+	FRotator DefaultRotationRate;
+
 };

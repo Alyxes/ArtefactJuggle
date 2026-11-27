@@ -27,7 +27,7 @@ AArtefactJuggleCharacter::AArtefactJuggleCharacter()
 
 	// Configure character movement
 	GetCharacterMovement()->bOrientRotationToMovement = true;
-	GetCharacterMovement()->RotationRate = FRotator(0.0f, 500.0f, 0.0f);
+	GetCharacterMovement()->RotationRate = FRotator(0.0f, 720.0f, 0.0f);
 
 	// Note: For faster iteration times these variables, and many more, can be tweaked in the Character Blueprint
 	// instead of recompiling to adjust them
@@ -88,6 +88,22 @@ void AArtefactJuggleCharacter::SetupPlayerInputComponent(UInputComponent* Player
 	{
 		UE_LOG(LogArtefactJuggle, Error, TEXT("'%s' Failed to find an Enhanced Input component! This template is built to use the Enhanced Input system. If you intend to use the legacy system, then you will need to update this C++ file."), *GetNameSafe(this));
 	}
+}
+
+void AArtefactJuggleCharacter::PostInitializeComponents()
+{
+	Super::PostInitializeComponents();
+
+	// Read the RotationRate set in the Character Blueprint before any falling/movement occurs
+	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
+	{
+		DefaultRotationRate = MoveComp->RotationRate;
+	}
+}
+void AArtefactJuggleCharacter::BeginPlay()
+{
+	Super::BeginPlay();
+
 }
 
 void AArtefactJuggleCharacter::Move(const FInputActionValue& Value)
@@ -176,55 +192,66 @@ void AArtefactJuggleCharacter::DoJumpEnd()
 	StopJumping();
 }
 
+void AArtefactJuggleCharacter::OnMovementModeChanged(EMovementMode PrevMovementMode, uint8 PreviousCustomMode)
+{
+	Super::OnMovementModeChanged(PrevMovementMode, PreviousCustomMode);
+
+	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
+	{
+		if (MoveComp->MovementMode == MOVE_Falling)
+		{
+			// Character jumped or walked off a ledge: restrict turning speed in mid-air
+			MoveComp->RotationRate = FRotator(0.0f, 0.0f, 0.0f);
+		}
+		else if (MoveComp->MovementMode == MOVE_Walking)
+		{
+			// Character landed back on the ground: restore normal turning speed
+			MoveComp->RotationRate = DefaultRotationRate;
+		}
+	}
+}
+
 void AArtefactJuggleCharacter::PickUpArtefact_Implementation(AArtefactBase* ArtefactToPickUp)
 {
-	// Säkerhetsspärr: Avbryt om stenen är tom eller om vi redan bär på något
+	// Safety check: abort if invalid, already holding something, or already owned by another player
 	if (ArtefactToPickUp == nullptr || bIsHoldingArtefact || ArtefactToPickUp->GetOwner() != nullptr)
 	{
-		GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Yellow, TEXT("C++: PickUp failed - Invalid or already holding."));
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Yellow, TEXT("C++: PickUp failed - Invalid or already holding."));
+		}
 		return;
 	}
-	
+
 	UArtefactManipulator* Manipulator = FindComponentByClass<UArtefactManipulator>();
 	if (Manipulator)
 	{
-		// 1. Tilldela stenen till manipulatorn och karaktärens referens
+		// 1. Assign artefact references
 		Manipulator->EquippedArtefact = ArtefactToPickUp;
-
-		// Försök att stoppa Manipulators tick från att interpolera artefakten när den sen ska sättas ner.
 		Manipulator->bIsGonnaPutDownArtefact = false;
-		CurrentArtefact = ArtefactToPickUp; // Er befintliga backup-referens
+		CurrentArtefact = ArtefactToPickUp;
 
-		// ArtefactToPickUp->SetReplicateMovement(false);
+		//// 2. Attach artefact to character mesh
+		//FAttachmentTransformRules AttachRules(
+		//	EAttachmentRule::SnapToTarget,
+		//	EAttachmentRule::SnapToTarget,
+		//	EAttachmentRule::KeepWorld,
+		//	false
+		//);
+		//ArtefactToPickUp->AttachToComponent(GetMesh(), AttachRules);
 
-		UPrimitiveComponent* ArtefactRoot = Cast<UPrimitiveComponent>(ArtefactToPickUp->GetRootComponent());
-		if (ArtefactRoot)
-		{
-			ArtefactRoot->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
-			ArtefactRoot->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Ignore);
-			ArtefactRoot->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Ignore);
-		}
-
-		// 2. SÄTT STARTLÄGET DIREKT I DATA
-		ArtefactToPickUp->CurrentPosition = EArtifactPosition::Forward;
-
-		// 3. PROFESSIONELL ATTACHMENT:
-		// Istället för den tunga text-loopen, fäster vi stenen direkt till karaktärens Mesh!
-		FAttachmentTransformRules AttachRules(
-			EAttachmentRule::SnapToTarget,
-			EAttachmentRule::SnapToTarget,
-			EAttachmentRule::KeepWorld,
-			false
-		);
-		ArtefactToPickUp->AttachToComponent(GetMesh(), AttachRules);
-
+		// 3. Update holding states and network ownership
 		bIsHoldingArtefact = true;
-
 		ArtefactToPickUp->SetOwner(this);
-		ArtefactToPickUp->CurrentPosition = EArtifactPosition::Forward;
+
+		// 4. Set authoritative position state (automatically updates collision & movement replication on server & clients)
+		ArtefactToPickUp->SetArtefactPosition(EArtifactPosition::Forward);
 		Manipulator->ResetCurrentPosition();
 
-		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Cyan, TEXT("C++: Artefact Attached to SlotForward successfully!"));
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Cyan, TEXT("C++: Artefact Attached to SlotForward successfully!"));
+		}
 	}
 }
 void AArtefactJuggleCharacter::DropArtefact()
@@ -284,33 +311,20 @@ void AArtefactJuggleCharacter::DropArtefact()
 	FRotator PutdownRotation = FRotator(0.0f, CharacterRotation.Yaw - 90.0f, 0.0f);
 	// CurrentArtefact->SetActorRotation(PutdownRotation);
 
-	// 5. CALCULATE ARTEFACT DIMENSIONS: Get the real-world bounding box to snap perfectly to the floor
-	float ArtefactHalfHeight = 0.0f;
-	UStaticMeshComponent* ArtefactMesh = CurrentArtefact->FindComponentByClass<UStaticMeshComponent>();
-	if (ArtefactMesh && ArtefactMesh->GetStaticMesh())
-	{
-		// 1. Hämta storleken på 3D-modellen i dess helt oroterade grundläge
-		FVector LocalExtent = ArtefactMesh->GetStaticMesh()->GetExtendedBounds().BoxExtent;
-
-		// 2. Multiplicera med den unika Z-skalan som du satt i editorn
-		float LocalScaleZ = ArtefactMesh->GetComponentScale().Z;
-
-		// 3. Nu har vi en helt konstant halvhöjd för när stenen står upprätt!
-		ArtefactHalfHeight = LocalExtent.Z * LocalScaleZ;
-	}
-
 	// Calculate final world position sitting flat on the detected ground
-	FVector FinalDropLocation = GroundHit.Location;
-	FinalDropLocation.Z += ArtefactHalfHeight;
+	FVector FinalDropLocation = FinalHorizontalLocation;
 
-	// 6. CALL SERVER FUNCTION TO EXECUTE THE DROP: This ensures the server validates and replicates the drop to all clients
-	if (Manipulator)
+	// Client-side visual prediction: immediately place the stone at the drop spot locally,
+	// so it snaps instantaneously without waiting for the server round-trip.
+	if (!HasAuthority())
 	{
-		// Call the server function with both the final drop location and the desired rotation
-		Manipulator->Server_DropArtefact(CurrentArtefact, FinalDropLocation, PutdownRotation);
+		Manipulator->EquippedArtefact = nullptr;
+		Manipulator->bIsControllingArtefact = false;
+		CurrentArtefact->SetActorLocationAndRotation(FinalDropLocation, PutdownRotation, false, nullptr, ETeleportType::TeleportPhysics);
 	}
-	else
-		GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Red, TEXT("C++: Cannot drop artefact - Manipulator component missing!"));
+
+	// 5. CALL SERVER FUNCTION TO EXECUTE THE DROP: This ensures the server validates and replicates the drop to all clients
+	Manipulator->Server_DropArtefact(CurrentArtefact, FinalDropLocation, PutdownRotation);
 }
 
 void AArtefactJuggleCharacter::StartArtefactJuggle()

@@ -8,6 +8,8 @@
 UArtefactManipulator::UArtefactManipulator()
 {
 	PrimaryComponentTick.bCanEverTick = true;
+	// Run AFTER character movement and skeletal mesh animations have updated for the frame
+	PrimaryComponentTick.TickGroup = TG_PostUpdateWork;
 
 	SetIsReplicatedByDefault(true);
 
@@ -17,6 +19,9 @@ UArtefactManipulator::UArtefactManipulator()
 	bIsGonnaPutDownArtefact = false;
 	bHasNeutralizedInput = true;
 	EquippedArtefact = nullptr;
+
+	CurrentLocalOffset = FVector::ZeroVector;
+	CurrentLocalRotation = FRotator::ZeroRotator;
 }
 
 void UArtefactManipulator::BeginPlay()
@@ -32,21 +37,25 @@ void UArtefactManipulator::TickComponent(float DeltaTime, ELevelTick TickType, F
 
 	if (EquippedArtefact != nullptr && EquippedArtefact->GetRootComponent())
 	{
+		ACharacter* OwnerCharacter = Cast<ACharacter>(GetOwner());
+		if (!OwnerCharacter || !OwnerCharacter->GetMesh()) return;
+
 		USceneComponent* ArtefactRoot = EquippedArtefact->GetRootComponent();
+		FTransform MeshWorldTransform = OwnerCharacter->GetMesh()->GetComponentTransform();
 
-		// 1. Hämta den exakta mål-transformationen i VÄRLDEN (World Space)
+		// 1. Get target slot transform in World Space, then convert to Character Mesh's Local Space
 		FTransform TargetWorldTransform = GetTargetSlotTransform(CurrentPosition);
+		FTransform TargetLocalTransform = TargetWorldTransform.GetRelativeTransform(MeshWorldTransform);
 
-		// 2. Hämta stenens nuvarande position och rotation i VÄRLDEN
-		FVector CurrentWorldLoc = ArtefactRoot->GetComponentLocation();
-		FRotator CurrentWorldRot = ArtefactRoot->GetComponentRotation();
+		// 2. Interpolate ONLY the local slot transition (zero lag when character walks or jumps)
+		CurrentLocalOffset = FMath::VInterpTo(CurrentLocalOffset, TargetLocalTransform.GetLocation(), DeltaTime, InterpSpeed);
+		CurrentLocalRotation = FMath::RInterpTo(CurrentLocalRotation, TargetLocalTransform.GetRotation().Rotator(), DeltaTime, InterpSpeed);
 
-		// 3. Interpolera mjukt i World Space
-		FVector NewWorldLoc = FMath::VInterpTo(CurrentWorldLoc, TargetWorldTransform.GetLocation(), DeltaTime, InterpSpeed);
-		FRotator NewWorldRot = FMath::RInterpTo(CurrentWorldRot, TargetWorldTransform.GetRotation().Rotator(), DeltaTime, InterpSpeed);
+		// 3. Convert back to World Space and apply directly to the artefact
+		FTransform FinalLocalTransform(CurrentLocalRotation, CurrentLocalOffset);
+		FTransform FinalWorldTransform = FinalLocalTransform * MeshWorldTransform;
 
-		// 4. Applicera direkt i världen (Detta struntar helt i om karaktärens mesh är omskalad!)
-		ArtefactRoot->SetWorldLocationAndRotation(NewWorldLoc, NewWorldRot);
+		ArtefactRoot->SetWorldLocationAndRotation(FinalWorldTransform.GetLocation(), FinalWorldTransform.GetRotation().Rotator());
 	}
 }
 
@@ -241,9 +250,7 @@ void UArtefactManipulator::HandleDirectionInput(FVector2D InputVector, FVector C
 	{
 		CurrentPosition = NewTargetPosition;
 
-		if (EquippedArtefact)
-			EquippedArtefact->CurrentPosition = NewTargetPosition;
-
+		// Update locally for instant visual responsiveness, then notify the server
 		Server_ChangePosition(NewTargetPosition);
 	}
 }
@@ -254,7 +261,7 @@ void UArtefactManipulator::Server_ChangePosition_Implementation(EArtifactPositio
 
 	if (EquippedArtefact)
 	{
-		EquippedArtefact->CurrentPosition = NewPosition;
+		EquippedArtefact->SetArtefactPosition(NewPosition);
 	}
 }
 
@@ -262,11 +269,10 @@ void UArtefactManipulator::Server_DropArtefact_Implementation(AArtefactBase* Art
 {
 	if (ArtefactToDrop == nullptr) return;
 
-	// Fetch the character (owner of the component).
 	AArtefactJuggleCharacter* CharOwner = Cast<AArtefactJuggleCharacter>(GetOwner());
 	if (!CharOwner) return;
 
-	// FIX 1: Turn off the control states IMMEDIATELY so TickComponent stops interpolating this frame!
+	// 1. Stop manipulator interpolation immediately
 	EquippedArtefact = nullptr;
 	bIsControllingArtefact = false;
 
@@ -274,32 +280,23 @@ void UArtefactManipulator::Server_DropArtefact_Implementation(AArtefactBase* Art
 	CharOwner->CurrentArtefact = nullptr;
 	CharOwner->bIsHoldingArtefact = false;
 
-	// FIX 2: Perform DETACH first before we touch any positions or network movement replication
-	FDetachmentTransformRules DetachRules(EDetachmentRule::KeepWorld, true);
-	ArtefactToDrop->DetachFromActor(DetachRules);
+	// 2. Activate ground state (collisions + server physics)
+	ArtefactToDrop->SetArtefactPosition(EArtifactPosition::None);
 
-	// FIX 3: Force the root component (Mesh) to clear any active interpolation offsets
+	// 3. Teleport physics body cleanly to the exact drop location and upright rotation
 	if (UPrimitiveComponent* ArtefactRoot = Cast<UPrimitiveComponent>(ArtefactToDrop->GetRootComponent()))
 	{
-		// Set both Actor and Component rotation to the straight upright target rotation
-		ArtefactToDrop->SetActorRotation(FinalRotation);
-		ArtefactRoot->SetWorldRotation(FinalRotation);
-
-		// Restore collision channels
-		ArtefactRoot->SetCollisionResponseToChannel(ECC_Pawn, ECR_Block);
-		ArtefactRoot->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
-		ArtefactRoot->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
+		ArtefactToDrop->SetActorLocationAndRotation(FinalLocation, FinalRotation, false, nullptr, ETeleportType::TeleportPhysics);
+		ArtefactRoot->WakeAllRigidBodies();
 	}
 
-	// FIX 4: Apply the exact world location on the server and enable movement replication LAST
-	ArtefactToDrop->SetActorLocation(FinalLocation);
-	// ArtefactToDrop->SetReplicateMovement(true);
+	// 4. Tell all clients to snap immediately to this exact location (prevents uneven interpolation on spectators).
+	ArtefactToDrop->Multicast_OnDropped(FinalLocation, FinalRotation);
 
 	ResetCurrentPosition();
 
-	// 5. Reset network ownership and state
+	// 5. Clear network ownership
 	ArtefactToDrop->SetOwner(nullptr);
-	ArtefactToDrop->CurrentPosition = EArtifactPosition::None;
 }
 
 FTransform UArtefactManipulator::GetTargetSlotTransform(EArtifactPosition Position) const
@@ -347,13 +344,25 @@ FTransform UArtefactManipulator::GetTargetSlotTransform(EArtifactPosition Positi
 void UArtefactManipulator::ResetCurrentPosition()
 {
 	CurrentPosition = EArtifactPosition::Forward;
-
 	bIsGonnaPutDownArtefact = false;
-
 	bHasNeutralizedInput = true;
+
+	// Snap local offset directly to SlotForward so it doesn't fly across the room on initial pickup
+	if (ACharacter* OwnerCharacter = Cast<ACharacter>(GetOwner()))
+	{
+		if (OwnerCharacter->GetMesh())
+		{
+			FTransform MeshWorldTransform = OwnerCharacter->GetMesh()->GetComponentTransform();
+			FTransform ForwardWorldTransform = GetTargetSlotTransform(EArtifactPosition::Forward);
+			FTransform ForwardLocalTransform = ForwardWorldTransform.GetRelativeTransform(MeshWorldTransform);
+
+			CurrentLocalOffset = ForwardLocalTransform.GetLocation();
+			CurrentLocalRotation = ForwardLocalTransform.GetRotation().Rotator();
+		}
+	}
 
 	if (EquippedArtefact != nullptr)
 	{
-		EquippedArtefact->CurrentPosition = EArtifactPosition::Forward;
+		EquippedArtefact->SetArtefactPosition(EArtifactPosition::Forward);
 	}
 }
